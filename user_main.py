@@ -187,3 +187,10 @@ class UserMain:
             # for each invitation, we delete the file
             for invitation in invitations: 
                 os.remove(f'{user}_server/{invitation}')
+        # destoy now all the json message inbox
+        messages=Json.find_files_with_suffix(f'{user}_server', 'messages.json')
+        if not messages: 
+            return 
+        else: 
+            for inbox in messages: 
+                os.remove(f'{user}_server/{inbox}')
