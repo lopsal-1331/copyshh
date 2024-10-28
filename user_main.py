@@ -168,7 +168,7 @@ class UserMain:
                     return
                 invitation =invitation[0]
                 sender=invitation.split('_')[0]
-                PrivateRoom.room_window(main, room_code, sender, user)
+                PrivateRoom(main, room_code, sender, user)
             else:
                 messagebox.showwarning("Input Error", "Please enter a room code.")
 
