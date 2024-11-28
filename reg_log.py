@@ -2,58 +2,74 @@
 import tkinter as tk 
 from tkinter import ttk 
 from tkinter import messagebox
-# import other classes
+import os
+from cryptography.hazmat.primitives import serialization
+
+
 
 class RegLog: 
     # function to open the registration window
     @staticmethod
-    def open_register_window(cur_window):
-        # create new window
+    def open_register_window(cur_window): 
+        # create a new window
         regw = tk.Toplevel(cur_window)
-        regw.title("Register")
-        regw.geometry("350x200")
+        regw.title('Register')
+        regw.geometry('400x250')
         
         # username input
-        ttk.Label(regw, 
-                  text="Username", 
-                  font = "Courier").grid(row=0, 
-                                         column=0, 
-                                         padx=10, 
-                                         pady=10)
-        new_usr=ttk.Entry(regw)
+        ttk.Label(
+            regw, 
+            text = 'Username', 
+            font = 'Courier'
+        ).grid(row=0, column=0, padx=10, pady=10)
+        new_usr = ttk.Entry(regw)
         new_usr.grid(row=0, column=1, padx=10, pady=10)
-        
+
         # password input
-        ttk.Label(regw, 
-                  text="Password", 
-                  font="Courier").grid(row=1, 
-                                       column=0, 
-                                       padx=10, 
-                                       pady=10)
-        usr_pass = ttk.Entry(regw, show="·")
+        ttk.Label (
+            regw, 
+            text='Password', 
+            font='Courier'
+        ).grid(row=1, column=0, padx=10, pady=10)
+        usr_pass = ttk.Entry(regw, show='·')
         usr_pass.grid(row=1, column=1, padx=10, pady=10)
-        
-        # confirmation of password input
-        ttk.Label(regw, 
-                  text="Confirm Password", 
-                  font="Courier").grid(row=2, 
-                                       column=0, 
-                                       padx=10, 
-                                       pady=10)
-        usr_pass_confirmation = ttk.Entry(regw, show="·")
+
+        # confirmation of password
+        ttk.Label (
+            regw, 
+            text='Confirm Password', 
+            font='Courier'
+        ).grid(row=2, column=0, padx=10, pady=10)
+        usr_pass_confirmation = ttk.Entry(regw, show='·')
         usr_pass_confirmation.grid(row=2, column=1, padx=10, pady=10)
-        
-        # registration button 
-        # calls function that processes registration data
-        ttk.Button(
-            regw,
-            text="Register", 
-            command=lambda: RegLog.register(
-                new_usr.get(),
+
+        # campus dropdown
+        ttk.Label(
+            regw, 
+            text='Campus', 
+            font='Courier'
+        ).grid(row=3, column=0, padx=10, pady=10)
+        campus = tk.StringVar()
+        campus_select = ttk.Combobox(
+            regw, 
+            textvariable=campus, 
+            values=['Colmenarejo', 'Leganés', 'Getafe', 'Puerta de Toledo'], 
+            state='readonly' # no option to write in the drop down
+        )
+        campus_select.grid(row=3, column=1, padx=10, pady=10)
+        campus_select.current(0) # selects Colmenarejo as default element
+
+        # register button
+        ttk.Button (
+            regw, 
+            text='Register', 
+            command=lambda:RegLog.register(
+                new_usr.get(), 
                 usr_pass.get(), 
-                usr_pass_confirmation.get()
+                usr_pass_confirmation.get(), 
+                campus_select.get()
             )
-        ).grid(row=3, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        ).grid(row=4, column=0, columnspan=2, padx=10, pady=10)
 
     @staticmethod
     def open_login_window(main):
@@ -84,8 +100,11 @@ class RegLog:
                         username_entry.get(), 
                         password_entry.get(), main)).grid(row=2, column=0, columnspan=2, pady=10)
 
-    def register(user:str, pas:str, pas2:str):
+    def register(user:str, pas:str, pas2:str, campus:str):
         from encryption import Encryption
+        from servers import Servers
+        from json_manager import Json
+
         if pas!=pas2: 
             messagebox.showerror('Error', 'Passwords do not match.')
             return
@@ -101,6 +120,35 @@ class RegLog:
         from json_manager import Json
         Json.store_data(user, token, salt)
         messagebox.showinfo('Success', 'User registered.')
+
+        Servers.initialize_authorities() # ensure the ca are initialized
+
+        campus_to_server = {
+            'Colmenarejo' : 'apartamentos_colmena', 
+            'Leganés' : 'apartamentos_lagarto',
+            'Puerta de Toledo' : 'apartamentos_toldos', 
+            'Getafe' : 'apartamentos_gafe'
+        }
+
+        campus_server_name= campus_to_server.get(campus)
+        if campus_server_name: 
+            # find the corresponding campus server 
+            campus_server = Servers.servers_instances.get(campus_server_name)
+            # generates keys for the user
+            user_private_key, user_public_key = Encryption.generate_keys()
+            Encryption.save_private_key(user_private_key, f'{user}_server/{user}privkey.pem', user)
+            Encryption.save_public_key(user_public_key, f'{user}_server/{user}publickey.pem', user)
+
+            # create and sign CSR of user using the campus server
+            user_cert = campus_server.create_and_sign_csr(user, user_public_key)
+
+            # save the signed certificate
+            user_cert_path = f'{user}_server/{user}_certificate.pem'
+            with open(user_cert_path, 'wb') as cert_file:
+                cert_file.write(user_cert.public_bytes(serialization.Encoding.PEM))
+
+            messagebox.showinfo('Success', f'{user} certificate generated and saved.')
+
     
     def login(user:str, pas:str, main):
         from encryption import Encryption
@@ -117,11 +165,5 @@ class RegLog:
             return 
         messagebox.showinfo('Success', 'Welcome to the Copyshh apartment building.')
         privk, publick = Encryption.generate_keys()
-        filename_priv=user+"_server/"+ user+'privkey.pem'
-        filename_public=user+"_server/"+ user+'publickey.pem'
-        filename_open_server="open_server/"+user+'publickey.pem'
-        Encryption.save_private_key(privk,filename_priv,user)
-        Encryption.save_public_key(publick, filename_public, user)
-        Encryption.save_public_key(publick, filename_open_server, user)
         from user_main import UserMain
         UserMain.user_main_window(main, user)
