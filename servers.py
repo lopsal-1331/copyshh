@@ -1,136 +1,146 @@
 import os
-from encryption import Encryption  
-from cryptography import x509 
-from cryptography.x509.oid import NameOID  
-from cryptography.hazmat.primitives import hashes, serialization  
-from datetime import datetime, timezone, timedelta  
-from cryptography.hazmat.primitives.asymmetric import rsa 
+from datetime import datetime, timedelta
+from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
+from cryptography.x509.oid import NameOID
+from tkinter import messagebox
 
-# class uc3m, root CA
-class Uc3m: 
-    def __init__(self, name='uc3m'):
-        self.name = name  # entity name
-        self.key_directory = f'{self.name}_keys'  # server for entity
-        os.makedirs(self.key_directory, exist_ok=True)  # creates the server if it does not exist
-        self.private_key = self._generate_and_save_private_key()  # generates and saves privavte key
-        self.self_signed_cert = self._generate_self_signed_certificate()  # generates self signed certificate
-    
-    # method to generate and save the private key for root CA
-    def _generate_and_save_private_key(self): 
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)  # generate rsa key
-        private_key_path = os.path.join(self.key_directory, f'{self.name}_privkey.pem') 
-        with open(private_key_path, 'wb') as key_file: 
-            key_file.write(
-                private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,  
-                    format = serialization.PrivateFormat.TraditionalOpenSSL,  
-                    encryption_algorithm=serialization.NoEncryption(), 
-                )
+class CertificateAuthority:
+    @staticmethod
+    def create_ca(common_name, issuer_cert=None, issuer_key=None):
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, u"ES"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, u"UC3M"),
+            x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+        ])
+        builder = x509.CertificateBuilder()
+        builder = builder.subject_name(subject)
+        builder = builder.issuer_name(subject if issuer_cert is None else issuer_cert.subject)
+        builder = builder.public_key(private_key.public_key())
+        builder = builder.serial_number(x509.random_serial_number())
+        builder = builder.not_valid_before(datetime.now())
+        builder = builder.not_valid_after(datetime.now() + timedelta(days=3650))
+        builder = builder.add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        certificate = builder.sign(private_key if issuer_key is None else issuer_key, hashes.SHA256())
+        return private_key, certificate
+
+    @staticmethod
+    def save_cert_and_key(cert, key, cert_path, key_path):
+        cert_dir = os.path.dirname(cert_path)
+        key_dir = os.path.dirname(key_path)
+        if cert_dir and not os.path.exists(cert_dir):
+            os.makedirs(cert_dir, exist_ok=True)
+        if key_dir and not os.path.exists(key_dir):
+            os.makedirs(key_dir, exist_ok=True)
+        with open(cert_path, "wb") as cert_file:
+            cert_file.write(cert.public_bytes(Encoding.PEM))
+        with open(key_path, "wb") as key_file:
+            key_file.write(key.private_bytes(
+                Encoding.PEM, 
+                PrivateFormat.PKCS8, 
+                NoEncryption()
+            ))
+
+    @staticmethod
+    def verify_certificate_chain(cert_to_verify, issuer_cert):
+        try:
+            issuer_public_key = issuer_cert.public_key()
+
+            print(f"Verifying certificate for: {cert_to_verify.subject}")
+            print(f"Using issuer: {issuer_cert.subject}")
+            print(f"Signature algorithm: {cert_to_verify.signature_hash_algorithm}")
+
+            issuer_public_key.verify(
+                cert_to_verify.signature,
+                cert_to_verify.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                cert_to_verify.signature_hash_algorithm,
             )
-        return private_key  
 
-    # method to generate the self-signed certificate of CA
-    def _generate_self_signed_certificate(self):
-        # define subject and issuer, in this case they are both the same
-        subject = issuer = x509.Name(
-            [
-                x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'UC3M Certification Authority'),  
-                x509.NameAttribute(NameOID.COMMON_NAME, 'uc3m')  
-            ]
-        )
+            if not (cert_to_verify.not_valid_before <= datetime.now() <= cert_to_verify.not_valid_after):
+                raise ValueError("El certificado ha expirado o aún no es válido.")
+            
+            if issuer_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value.lower() == "uc3m":
+                issuer_public_key.verify(
+                    issuer_cert.signature,
+                    issuer_cert.tbs_certificate_bytes,
+                    padding.PKCS1v15(),
+                    issuer_cert.signature_hash_algorithm,
+                )
+                print(f"CA raíz ('UC3M') alcanzada y verificada, la cadena de certificados es válida.")
+                messagebox.showinfo('Éxito', 'Certificado verificado con éxito.')
+                return
 
-        # constructs the certificate using the private key + signature
-        certificate = (
-            x509.CertificateBuilder()
-            .subject_name(subject)  
-            .issuer_name(issuer)  
-            .public_key(self.private_key.public_key())  # uses public key of CA
-            .serial_number(x509.random_serial_number())  # random serial number
-            .not_valid_before(datetime.now(timezone.utc))  
-            .not_valid_after(datetime.now(timezone.utc) + timedelta(days=3650))  # valid for 10 years
-            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)  # root certificate signal
-            .sign(self.private_key, hashes.SHA256())  # signed with private key of CA
-        )
-        # saves certificate in a sevrer
-        cert_path = os.path.join(self.key_directory, f'{self.name}_self_signed_cert.pem')
-        with open(cert_path, 'wb') as cert_file:
-            cert_file.write(certificate.public_bytes(serialization.Encoding.PEM))
-        return certificate  # returns the self signed certificate
+            issuer_issuer_cert_path = f"CA/{issuer_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value.lower()}/{issuer_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value.lower()}_cert.pem"
+            if not os.path.exists(issuer_issuer_cert_path):
+                raise FileNotFoundError(f"Certificado del emisor de {issuer_cert.subject} no encontrado.")
 
-# Class 'Servers' to represent the servers to be validated by uc3m root CA
-class Servers: 
-    uc3m_instance=None 
-    servers_instances={}
+            with open(issuer_issuer_cert_path, 'rb') as file:
+                issuer_issuer_cert = x509.load_pem_x509_certificate(file.read())
 
-    def __init__(self, name:str, root_ca=None): 
-        self.name = name  # Nombre del servidor
-        self.key_directory = f'{self.name}_server_keys'  
-        os.makedirs(self.key_directory, exist_ok=True)  
-        self.private_key, self.public_key = self._generate_and_save_keys()  
-        # if a root ca is passed, generates and saves the certificate signed by them
-        self.certificate = self._generate_and_save_certificate_signed_by_ca(root_ca) if root_ca else None
+            CertificateAuthority.verify_certificate_chain(issuer_cert, issuer_issuer_cert)
+        except Exception as e:
+            print(f"Error al verificar el certificado: {e}")
+            messagebox.showerror('Error', f'Error al verificar el certificado: {e}')
+            raise e
 
-    # method to generate and save the public and private keys of the server
-    def _generate_and_save_keys(self):
-        private_key, public_key = Encryption.generate_keys()  # generates rsa keys
-        # saves pem key files in servers directories
-        Encryption.save_private_key(private_key, os.path.join(self.key_directory, f'{self.name}_privkey.pem'), self.name)
-        Encryption.save_public_key(public_key, os.path.join(self.key_directory, f'{self.name}_publickey.pem'), self.name)
-        return private_key, public_key  # returns the keys generated
-    
-    def create_and_sign_csr(self, username, user_public_key):
-        # Crear una solicitud de firma de certificado (CSR) para el usuario
-        csr = (
-            x509.CertificateSigningRequestBuilder()
-            .subject_name(x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, f'{username}')]))  # Nombre del usuario
-            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)  # No es un certificado CA
-            .sign(self.private_key, hashes.SHA256())  # Firmar el CSR con la clave privada del servidor
-        )
+    @staticmethod
+    def exchange_and_verify_certificate(user_a, user_b):
+        user_a_cert_path = f"{user_a}_server/{user_a}_cert.pem"
+        user_b_cert_path = f"{user_b}_server/{user_b}_cert.pem"
 
-        # Ahora firmar el CSR con la CA del servidor
-        certificate = (
-            x509.CertificateBuilder()
-            .subject_name(csr.subject)  # Usar el sujeto del CSR
-            .issuer_name(self.certificate.subject)  # El emisor es el certificado del servidor
-            .public_key(user_public_key)  # Usar la clave pública del usuario
-            .serial_number(x509.random_serial_number())  # Número de serie único
-            .not_valid_before(datetime.now(timezone.utc))  # El certificado es válido desde ahora
-            .not_valid_after(datetime.now(timezone.utc) + timedelta(days=3650))  # El certificado es válido por 10 años
-            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)  # No es un certificado CA
-            .sign(self.private_key, hashes.SHA256())  # Firmar el certificado con la clave privada del servidor
-        )
+        if not os.path.exists(user_a_cert_path):
+            raise FileNotFoundError(f"Certificate for {user_a} not found: {user_a_cert_path}")
+        if not os.path.exists(user_b_cert_path):
+            raise FileNotFoundError(f"Certificate for {user_b} not found: {user_b_cert_path}")
 
-        return certificate  # Devolver el certificado firmado
-    
-    # method to generate and save the certificate signed by root ca
-    def _generate_and_save_certificate_signed_by_ca(self, root_ca):
-        # defines subject - common name of server
-        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, self.name)])
-        # generates the certificate using public key of server and private key of root CA
-        cert = (
-            x509.CertificateBuilder()
-            .subject_name(subject)  
-            .issuer_name(root_ca.self_signed_cert.subject)  
-            .public_key(self.public_key)  
-            .serial_number(x509.random_serial_number())  
-            .not_valid_before(datetime.now(timezone.utc))  
-            .not_valid_after(datetime.now(timezone.utc) + timedelta(days=3650))  
-            .sign(root_ca.private_key, hashes.SHA256())  
-        )
-        # saves signed certificate in file
-        cert_path = os.path.join(self.key_directory, f'{self.name}_certificate.pem')
-        with open(cert_path, 'wb') as cert_file:
-            cert_file.write(cert.public_bytes(serialization.Encoding.PEM))
-        return cert 
+        with open(user_a_cert_path, 'rb') as file:
+            user_a_cert = x509.load_pem_x509_certificate(file.read())
+        with open(user_b_cert_path, 'rb') as file:
+            user_b_cert = x509.load_pem_x509_certificate(file.read())
 
-    # method to start root CA and servers
-    @classmethod
-    def initialize_authorities(cls):
-        if not cls.uc3m_instance:  # if theres no root CA instance
-            cls.uc3m_instance = Uc3m()  # creates instance
-            # create instances and generate their certificates
-            cls.servers_instances = {
-                name: Servers(name, cls.uc3m_instance)  # create and asign certificates
-                for name in ["apartamentos_colmena", "apartamentos_gafe", "apartamentos_toldos", "apartamentos_lagarto"]
-            }
+        def get_issuer_certificate_chain(cert):
+            chain = []
+            while True:
+                issuer_string = cert.issuer.rfc4514_string()
+                issuer_parts = dict(part.split('=') for part in issuer_string.split(','))
+                organization = issuer_parts.get('CN').lower()
+                issuer_cert_path = f"CA/{organization}/cert.pem"
+                if not os.path.exists(issuer_cert_path):
+                    raise FileNotFoundError(f"Issuer certificate for {cert.subject} not found: {issuer_cert_path}")
+                with open(issuer_cert_path, 'rb') as file:
+                    issuer_cert = x509.load_pem_x509_certificate(file.read())
+                chain.append(issuer_cert)
+                if organization == "uc3m":
+                    break
+                cert = issuer_cert
+            return chain
 
+        # Verificar la cadena de certificados para el usuario A
+        issuer_chain_a = get_issuer_certificate_chain(user_a_cert)
+        for i in range(len(issuer_chain_a) - 1):
+            CertificateAuthority.verify_certificate_chain(issuer_chain_a[i], issuer_chain_a[i + 1])
+
+        # Verificar la cadena de certificados para el usuario B
+        issuer_chain_b = get_issuer_certificate_chain(user_b_cert)
+        for i in range(len(issuer_chain_b) - 1):
+            CertificateAuthority.verify_certificate_chain(issuer_chain_b[i], issuer_chain_b[i + 1])
+
+        return user_a_cert.public_key(), user_b_cert.public_key()
+
+def initialize_cas():
+    os.makedirs("CA", exist_ok=True)
+    root_key, root_cert = CertificateAuthority.create_ca("UC3M")
+    os.makedirs("CA/uc3m", exist_ok=True)
+    CertificateAuthority.save_cert_and_key(root_cert, root_key, "CA/uc3m/uc3m_cert.pem", "CA/uc3m/uc3m_key.pem")
+    apartments = ["apartamentos_colmena", "apartamentos_lagarto", "apartamentos_gafe", "apartamentos_toldos"]
+    for apartment in apartments:
+        os.makedirs(f"CA/{apartment}", exist_ok=True)
+        apartment_key, apartment_cert = CertificateAuthority.create_ca(apartment, issuer_cert=root_cert, issuer_key=root_key)
+        CertificateAuthority.save_cert_and_key(apartment_cert, apartment_key, f"CA/{apartment}/cert.pem", f"CA/{apartment}/key.pem")
+
+if __name__ == "__main__":
+    initialize_cas()
