@@ -3,6 +3,9 @@ from tkinter import ttk
 from tkinter import messagebox
 from private_room import PrivateRoom
 import os 
+from cryptography.hazmat.primitives.serialization import Encoding
+from cryptography.hazmat.primitives import serialization
+
 '''
 FUNCTIONS AND INTERFACE OF USER MAIN WINDOW AFTER LOGIN
 '''
@@ -62,10 +65,27 @@ class UserMain:
     @staticmethod
     def send_invitation(sender, receiver):
         from encryption import Encryption 
-        # this function  mimics both ends of the transaction.
-        # sender loads the public key of the receiver -from OPEN SERVER
-        receiver_publickey_path = f'open_server/{receiver}publickey.pem' 
-        receiver_publickey = Encryption.load_public_key(receiver_publickey_path)
+        from servers import CertificateAuthority
+        sender_publickey, receiver_publickey = CertificateAuthority.exchange_and_verify_certificate(
+            user_a=sender, 
+            user_b=receiver
+        )
+
+        with open(f'{sender}_server/{receiver}publickey.pem', 'wb') as file: 
+            file.write(
+                sender_publickey.public_bytes(
+                    encoding=Encoding.PEM, 
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                )
+            )
+        
+        with open(f'{receiver}_server/{sender}publickey.pem', 'wb') as file: 
+            file.write(
+                receiver_publickey.public_bytes(
+                    encoding=Encoding.PEM, 
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                )
+            )
 
         # For signing, sender also loads their private key
         sender_privatekey_path=f'{sender}_server/{sender}privkey.pem'
@@ -75,9 +95,6 @@ class UserMain:
         receiver_privatekey_path=f'{receiver}_server/{receiver}privkey.pem'
         receiver_privatekey=Encryption.load_private_key(receiver_privatekey_path)
 
-        # the receiver loads the public key of the sender to make sure the data is authenticated
-        sender_publickey_path=f'open_server/{sender}publickey.pem'
-        sender_publickey=Encryption.load_public_key(sender_publickey_path)
         
         # Generate a room code and a chacha key for communication inside the private room.
         chacha_key, code = Encryption.generate_chacha_key_and_code()
