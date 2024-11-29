@@ -2,10 +2,7 @@
 import tkinter as tk 
 from tkinter import ttk 
 from tkinter import messagebox
-import os
-from cryptography.hazmat.primitives import serialization
-
-
+# import other classes
 
 class RegLog: 
     # function to open the registration window
@@ -70,7 +67,7 @@ class RegLog:
                 campus_select.get()
             )
         ).grid(row=4, column=0, columnspan=2, padx=10, pady=10)
-
+    
     @staticmethod
     def open_login_window(main):
     # open new window for log in 
@@ -100,55 +97,67 @@ class RegLog:
                         username_entry.get(), 
                         password_entry.get(), main)).grid(row=2, column=0, columnspan=2, pady=10)
 
-    def register(user:str, pas:str, pas2:str, campus:str):
+    def register(user:str, pas:str, pas2:str, campus):
         from encryption import Encryption
-        from servers import Servers
+        from servers import CertificateAuthority
         from json_manager import Json
-
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+        # passwords should match
         if pas!=pas2: 
             messagebox.showerror('Error', 'Passwords do not match.')
             return
-        if len(pas)<8: 
-            messagebox.showerror('Error','Password should be at least 8 characters')
-            return
-        from json_manager import Json
+        '''if len(pas)<8: 
+            messagebox.showerror('Error','Password should be at  least 8 characters')
+            return'''
+        
+        # see if the username already exists in database
         user_stored=Json.get_user_data(user)
         if user_stored:
             messagebox.showerror('Error', 'Username already taken.')
             return
+        
+        # generate token and salt for user
         token, salt = Encryption.get_token_salt(pas, None)
         from json_manager import Json
+
+        # store data in database
         Json.store_data(user, token, salt)
         messagebox.showinfo('Success', 'User registered.')
 
-        Servers.initialize_authorities() # ensure the ca are initialized
-
+        # reference map for servers
         campus_to_server = {
-            'Colmenarejo' : 'apartamentos_colmena', 
-            'Leganés' : 'apartamentos_lagarto',
-            'Puerta de Toledo' : 'apartamentos_toldos', 
-            'Getafe' : 'apartamentos_gafe'
+            'Colmenarejo': 'apartamentos_colmena',
+            'Leganés': 'apartamentos_lagarto',
+            'Puerta de Toledo': 'apartamentos_toldos',
+            'Getafe': 'apartamentos_gafe'
         }
 
-        campus_server_name= campus_to_server.get(campus)
-        if campus_server_name: 
-            # find the corresponding campus server 
-            campus_server = Servers.servers_instances.get(campus_server_name)
-            # generates keys for the user
-            user_private_key, user_public_key = Encryption.generate_keys()
-            Encryption.save_private_key(user_private_key, f'{user}_server/{user}privkey.pem', user)
-            Encryption.save_public_key(user_public_key, f'{user}_server/{user}publickey.pem', user)
+        campus_name = campus_to_server.get(campus)
+        if not campus: 
+            messagebox.showerror('Error', 'Campus not found')
+        
+        # load users corresponding ca cecrtificate and private key to sign their certificate
+        ca_cert_path=f'CA/{campus_name}/cert.pem'
+        ca_key_path = f'CA/{campus_name}/key.pem'
+        with open(ca_cert_path, "rb") as f:
+            ca_cert = x509.load_pem_x509_certificate(f.read())
+        with open(ca_key_path, "rb") as f:
+            ca_key = serialization.load_pem_private_key(f.read(), None)
+        
+        # create certificate for user
+        user_key, user_cert = CertificateAuthority.create_ca(
+            user, 
+            issuer_cert=ca_cert,
+            issuer_key=ca_key)
 
-            # create and sign CSR of user using the campus server
-            user_cert = campus_server.create_and_sign_csr(user, user_public_key)
+        # save key and certificate in user server
+        cert_path = f'{user}_server/{user}_cert.pem'
+        key_path = f'{user}_server/{user}privkey.pem'
+        CertificateAuthority.save_cert_and_key(user_cert, user_key, cert_path, key_path)
 
-            # save the signed certificate
-            user_cert_path = f'{user}_server/{user}_certificate.pem'
-            with open(user_cert_path, 'wb') as cert_file:
-                cert_file.write(user_cert.public_bytes(serialization.Encoding.PEM))
-
-            messagebox.showinfo('Success', f'{user} certificate generated and saved.')
-
+        # show success mesasge
+        messagebox.showinfo('Success', f'Certification granted by {campus}')
     
     def login(user:str, pas:str, main):
         from encryption import Encryption
@@ -164,6 +173,5 @@ class RegLog:
             messagebox.showerror('Error', 'Incorrect Password')
             return 
         messagebox.showinfo('Success', 'Welcome to the Copyshh apartment building.')
-        privk, publick = Encryption.generate_keys()
         from user_main import UserMain
         UserMain.user_main_window(main, user)
