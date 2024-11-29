@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.backends import default_backend
+from cryptography import x509
 
 
 class Encryption: 
@@ -250,24 +251,15 @@ class Encryption:
             return False
     
     @staticmethod
-    def generate_hmac_key(): 
-        # generates a hmac key as a sequence of 32 bytes
-        return os.urandom(32)
-        
-    @staticmethod
-    def sign_with_hmac(hmac_key, message):
-        # function to sign a message with hmac
-        h = hmac.HMAC(hmac_key, hashes.SHA256())
-        h.update(message)
-        return h.finalize()
-
-    @staticmethod
-    def verify_hmac(key, text, signature): 
-        # function to verify an hmac signature
-        h=hmac.HMAC(key, hashes.SHA256())
-        h.update(text)
+    def load_certificate(cert_path): 
+        # method to load a .pem certificate from file 
         try: 
-            h.verify(signature)
-            return True
+            # open cert file
+            with open(cert_path, 'rb') as cert_file: 
+                cert_data = cert_file.read()
+            certificate = x509.load_der_x509_certificate(cert_data)
+            return certificate
+        except FileNotFoundError: 
+            raise FileNotFoundError(f'Certificate file not found: {cert_path}')
         except Exception as e: 
-            return False
+            raise ValueError('Failed to load certificate.')
